@@ -1,0 +1,391 @@
+#!/usr/bin/env -S node --disable-warning=ExperimentalWarning
+import { spawn } from "child_process";
+import path from "path";
+import { fileURLToPath, URL } from "url";
+import fs, { readFileSync } from "fs";
+import { Command } from "commander";
+import { resolveConfig, assertOpenClawExists, initConfigTemplate } from "./core/config.js";
+import { dropAndResetDb } from "./core/db.js";
+import { startDaemon } from "./daemon.js";
+import { runStatus } from "./cli/commands/status.js";
+import { runCost } from "./cli/commands/cost.js";
+import { runSession } from "./cli/commands/session.js";
+import { runCompacts } from "./cli/commands/compacts.js";
+import { runSchema } from "./cli/commands/schema.js";
+import { runTop } from "./cli/commands/top.js";
+import { runContext } from "./cli/commands/context.js";
+import { runSuggest } from "./cli/commands/suggest.js";
+
+// Read version from package.json at runtime so it's always in sync
+const VERSION: string = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf-8")
+).version as string;
+
+const program = new Command();
+
+program
+  .name("clawsmith")
+  .description("Know exactly what your OpenClaw agent is doing — token usage, cost, context health, and smart alerts in one place.")
+  .version(VERSION);
+
+// --- start ---
+program
+  .command("start")
+  .description("Start the background daemon (watches OpenClaw files)")
+  .option("--no-browser", "Do not open browser on start")
+  .option("--daemon-only", "Start daemon only, no web server")
+  .option("--foreground", "Run daemon in foreground (don't detach)")
+  .action(async (opts: { foreground?: boolean }) => {
+    const cfg = resolveConfig();
+    assertOpenClawExists(cfg);
+
+    // Already the daemon process (spawned with CLAWSMITH_DAEMON=1)
+    if (process.env.CLAWSMITH_DAEMON === "1") {
+      await startDaemon(cfg);
+      return;
+    }
+
+    // Run in foreground if requested
+    if (opts.foreground) {
+      await startDaemon(cfg);
+      return;
+    }
+
+    // Ensure probeDir exists before spawning daemon (daemon can't create it when stdio is ignored)
+    fs.mkdirSync(cfg.probeDir, { recursive: true });
+
+    // Create a default config.json template on first run so users can discover all options
+    if (initConfigTemplate(cfg.probeDir)) {
+      console.log(`✓ Config template created: ${cfg.probeDir}/config.json`);
+    }
+
+    // Spawn detached daemon and exit (nohup-style). Daemon writes its own logs to daemon.log.
+    const entryPath = fileURLToPath(import.meta.url);
+    const daemonLogPath = path.join(cfg.probeDir, "daemon.log");
+    const child = spawn(process.execPath, [entryPath, "start"], {
+      detached: true,
+      stdio: "ignore",
+      env: { ...process.env, CLAWSMITH_DAEMON: "1" },
+      cwd: process.cwd(),
+    });
+    child.unref();
+    console.log("✓ clawsmith daemon started (detached)");
+    console.log(`✓ Watching: ${cfg.openclawDir}`);
+    console.log(`✓ Logs: ${daemonLogPath}`);
+    process.exit(0);
+  });
+
+// --- reset-db ---
+program
+  .command("reset-db")
+  .description("Delete and recreate probe.db (re-indexes all data from .jsonl files on next start)")
+  .option("--yes", "Skip confirmation prompt")
+  .action(async (opts: { yes?: boolean }) => {
+    const cfg = resolveConfig();
+    const dbPath = `${cfg.probeDir}/probe.db`;
+
+    if (!opts.yes) {
+      const readline = await import("readline");
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      await new Promise<void>((resolve) => {
+        rl.question(
+          `This will delete ${dbPath} and re-index from .jsonl transcripts on next start.\nContinue? [y/N] `,
+          (answer) => {
+            rl.close();
+            if (answer.toLowerCase() !== "y") {
+              console.log("Aborted.");
+              process.exit(0);
+            }
+            resolve();
+          }
+        );
+      });
+    }
+
+    dropAndResetDb(cfg.probeDir);
+    console.log(`✓ probe.db deleted. Run \`clawsmith start\` to rebuild from .jsonl transcripts.`);
+  });
+
+// --- stop ---
+program
+  .command("stop")
+  .description("Stop the running daemon")
+  .action(() => {
+    const cfg = resolveConfig();
+    const pidFile = `${cfg.probeDir}/daemon.pid`;
+    const { existsSync, readFileSync, unlinkSync } = fs;
+    if (!existsSync(pidFile)) {
+      console.log("No daemon PID file found — daemon may not be running.");
+      return;
+    }
+    const pid = parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
+    if (isNaN(pid)) {
+      console.log("Invalid PID file. Delete it manually: " + pidFile);
+      return;
+    }
+    try {
+      process.kill(pid, "SIGTERM");
+      unlinkSync(pidFile);
+      console.log(`✓ Daemon stopped (PID ${pid})`);
+    } catch (e: unknown) {
+      const err = e as NodeJS.ErrnoException;
+      if (err.code === "ESRCH") {
+        console.log(`Daemon (PID ${pid}) was not running. Cleaning up PID file.`);
+        try { unlinkSync(pidFile); } catch { /* ignore */ }
+      } else {
+        console.error(`Failed to stop daemon: ${err.message}`);
+      }
+    }
+  });
+
+// --- status ---
+program
+  .command("status")
+  .description("Current session status (tokens, model, compactions)")
+  .option("--agent <name>", "Target agent")
+  .option("--session <key>", "Target session key")
+  .option("--json", "Output as JSON")
+  .action(async (opts) => {
+    const cfg = resolveConfig();
+    assertOpenClawExists(cfg);
+    await runStatus(cfg, opts);
+  });
+
+// --- cost ---
+program
+  .command("cost")
+  .description("API cost summary")
+  .option("--day", "Today")
+  .option("--week", "Current week (default)")
+  .option("--month", "Current month")
+  .option("--all", "All time")
+  .option("--agent <name>", "Target agent")
+  .option("--json", "Output as JSON")
+  .action(async (opts) => {
+    const cfg = resolveConfig();
+    assertOpenClawExists(cfg);
+    await runCost(cfg, opts);
+  });
+
+// --- session ---
+const sessionCmd = program
+  .command("session [session-key]")
+  .description("Per-session cost and turn breakdown")
+  .option("--list", "List all sessions")
+  .option("--full", "Show full session keys (no truncation)")
+  .option("--no-turns", "Hide turn-by-turn timeline")
+  .option("--agent <name>", "Target agent")
+  .option("--json", "Output as JSON")
+  .action(async (sessionKey, opts) => {
+    const cfg = resolveConfig();
+    assertOpenClawExists(cfg);
+    await runSession(cfg, sessionKey as string | undefined, opts);
+  });
+
+// --- compacts ---
+program
+  .command("compacts")
+  .description("Recent compaction events")
+  .option("--last <n>", "Number of events to show", "5")
+  .option("--agent <name>", "Target agent")
+  .option("--session <key>", "Filter by session")
+  .option("--show-messages", "Show full message content")
+  .option("--save <id>", "Save a compact event's messages to memory")
+  .option("--json", "Output as JSON")
+  .action(async (opts) => {
+    const cfg = resolveConfig();
+    assertOpenClawExists(cfg);
+    await runCompacts(cfg, { ...opts, last: parseInt(opts.last ?? "5", 10) });
+  });
+
+// --- context ---
+program
+  .command("context")
+  .description("Context window composition analysis")
+  .option("--agent <name>", "Target agent")
+  .option("--json", "Output as JSON")
+  .action(async (opts) => {
+    const cfg = resolveConfig();
+    assertOpenClawExists(cfg);
+    await runContext(cfg, opts);
+  });
+
+// --- suggest ---
+program
+  .command("suggest")
+  .description("Optimization suggestions")
+  .option("--agent <name>", "Target agent")
+  .option("--severity <level>", "Filter: critical | warning | info")
+  .option("--dismiss <rule-id>", "Dismiss a suggestion")
+  .option("--reset-dismissed", "Un-dismiss all suggestions")
+  .option("--json", "Output as JSON")
+  .action(async (opts) => {
+    const cfg = resolveConfig();
+    assertOpenClawExists(cfg);
+    await runSuggest(cfg, {
+      agent: opts.agent,
+      severityFilter: opts.severity,
+      dismiss: opts.dismiss,
+      resetDismissed: opts.resetDismissed,
+      json: opts.json,
+    });
+  });
+
+// --- config ---
+program
+  .command("config")
+  .description("Show detected OpenClaw configuration")
+  .option("--json", "Output as JSON")
+  .option("--diag", "Run diagnostics: check paths, db row counts, daemon log tail")
+  .action(async (opts) => {
+    const cfg = resolveConfig();
+    if (opts.json) {
+      console.log(JSON.stringify({ openclawDir: cfg.openclawDir, workspaceDir: cfg.workspaceDir, sessionsDir: cfg.sessionsDir, bootstrapMaxChars: cfg.bootstrapMaxChars, probeDir: cfg.probeDir, openclaw: cfg.openclaw }, null, 2));
+      return;
+    }
+    console.log(`OpenClaw dir:      ${cfg.openclawDir}`);
+    console.log(`Workspace:         ${cfg.workspaceDir}`);
+    console.log(`Sessions:          ${cfg.sessionsDir}`);
+    console.log(`Bootstrap max:     ${cfg.bootstrapMaxChars.toLocaleString()} chars`);
+    console.log(`probe.db:          ${cfg.probeDir}/probe.db`);
+    const model = cfg.openclaw.models?.default;
+    if (model) console.log(`Default model:     ${model}`);
+    const engine = cfg.openclaw.plugins?.slots?.contextEngine;
+    if (engine) console.log(`Context engine:    ${engine}`);
+
+    if (opts.diag) {
+      const { existsSync, readdirSync, readFileSync, statSync } = await import("fs");
+      const chalk = (await import("chalk")).default;
+      const { openDb } = await import("./core/db.js");
+      const { readSessionsStore, listJsonlFiles } = await import("./core/session-store.js");
+      const { LOCAL_TZ } = await import("./cli/format.js");
+
+      console.log("\n" + chalk.bold("── Diagnostics ─────────────────────────────────────"));
+      console.log(`  Timezone:   ${LOCAL_TZ}  (set TZ=Asia/Shanghai or add {"timezone":"Asia/Shanghai"} to ~/.clawsmith/config.json to override)`);
+
+      const check = (label: string, p: string) => {
+        const ok = existsSync(p);
+        console.log(`  ${ok ? chalk.green("✓") : chalk.red("✗")} ${label}: ${p}`);
+        return ok;
+      };
+
+      check("openclawDir ", cfg.openclawDir);
+      const sessOk = check("sessionsDir ", cfg.sessionsDir);
+      check("workspaceDir", cfg.workspaceDir);
+      check("probeDir    ", cfg.probeDir);
+
+      if (sessOk) {
+        const jsonlFiles = listJsonlFiles(cfg.sessionsDir);
+        console.log(`\n  .jsonl transcript files found: ${jsonlFiles.length}`);
+        jsonlFiles.forEach(f => console.log(`    - ${f}`));
+
+        const sessJsonPath = `${cfg.sessionsDir}/sessions.json`;
+        console.log();
+        if (existsSync(sessJsonPath)) {
+          const sessions = readSessionsStore(cfg.sessionsDir);
+          console.log(`  sessions.json: ${sessions.length} session(s) parsed`);
+          sessions.forEach(s => {
+            console.log(`    • key:       ${s.sessionKey}`);
+            console.log(`      sessionId: ${s.sessionId}`);
+            console.log(`      in=${s.inputTokens} out=${s.outputTokens} ctx=${s.contextTokens}`);
+          });
+
+          console.log();
+          console.log(`  sessions.json raw (first entry keys):`);
+          try {
+            const raw = JSON.parse(readFileSync(sessJsonPath, "utf-8")) as Record<string, unknown>;
+            const sessMap = ("sessions" in raw && typeof raw["sessions"] === "object")
+              ? raw["sessions"] as Record<string, unknown>
+              : raw;
+            const firstKey = Object.keys(sessMap)[0];
+            if (firstKey) {
+              const firstVal = sessMap[firstKey] as Record<string, unknown>;
+              console.log(`    key: ${firstKey}`);
+              console.log(`    value fields: ${Object.keys(firstVal).join(", ")}`);
+              for (const [k, v] of Object.entries(firstVal)) {
+                if (typeof v === "string" && /^[0-9a-f-]{36}$/.test(v)) {
+                  console.log(`    ${k} = ${v}  ${chalk.green("← UUID")}`);
+                }
+              }
+            }
+          } catch (e) {
+            console.log(`    (failed to parse: ${e})`);
+          }
+
+          console.log();
+          console.log(`  jsonl UUID → sessionKey mapping:`);
+          const { findJsonlPath } = await import("./core/session-store.js");
+          const { basename: pathBasename } = await import("path");
+          for (const s of sessions) {
+            const p = findJsonlPath(cfg.sessionsDir, s);
+            const uuidFile = p ? pathBasename(p) : chalk.red("NOT FOUND");
+            console.log(`    ${s.sessionKey.slice(0, 50)} → ${uuidFile}`);
+          }
+        } else {
+          console.log(`  ${chalk.red("✗")} sessions.json not found at ${sessJsonPath}`);
+        }
+      }
+
+      // DB stats
+      const dbPath = `${cfg.probeDir}/probe.db`;
+      if (existsSync(dbPath)) {
+        try {
+          const db = openDb(cfg.probeDir);
+          const snapCount    = (db.prepare("SELECT COUNT(*) as n FROM session_snapshots").get() as { n: number }).n;
+          const fileCount    = (db.prepare("SELECT COUNT(*) as n FROM file_snapshots").get() as { n: number }).n;
+          const turnCount    = (db.prepare("SELECT COUNT(*) as n FROM turn_records").get() as { n: number }).n;
+          const compactCount = (db.prepare("SELECT COUNT(*) as n FROM compact_events").get() as { n: number }).n;
+          console.log(`\n  probe.db row counts:`);
+          console.log(`    session_snapshots: ${snapCount}`);
+          console.log(`    file_snapshots:    ${fileCount}`);
+          console.log(`    turn_records:      ${turnCount}`);
+          console.log(`    compact_events:    ${compactCount}`);
+          if (snapCount === 0) {
+            console.log(`\n  ${chalk.yellow("⚠")} session_snapshots is empty.`);
+            console.log(`    Possible causes:`);
+            console.log(`    1. Daemon hasn't finished its initial scan yet`);
+            console.log(`    2. sessionsDir doesn't exist or sessions.json is empty/missing`);
+            console.log(`    3. Daemon crashed on startup — check: cat ~/.clawsmith/daemon.log`);
+          }
+        } catch (e) {
+          console.log(`  ${chalk.red("✗")} Could not open probe.db: ${e}`);
+        }
+      } else {
+        console.log(`\n  ${chalk.red("✗")} probe.db not found — daemon may never have started successfully`);
+      }
+
+      // Tail daemon.log
+      const daemonLog = `${cfg.probeDir}/daemon.log`;
+      if (existsSync(daemonLog)) {
+        const content = readFileSync(daemonLog, "utf-8").trim();
+        const lines = content.split("\n");
+        const tail = lines.slice(-20).join("\n");
+        console.log(`\n  Last 20 lines of daemon.log:\n`);
+        console.log(tail.split("\n").map(l => "    " + l).join("\n"));
+      } else {
+        console.log(`\n  daemon.log not found at ${daemonLog}`);
+      }
+    }
+  });
+
+// --- top ---
+program
+  .command("top")
+  .description("Live dashboard — auto-refreshing agent status, context, cost and turns")
+  .option("--agent <name>", "Target agent")
+  .option("--interval <seconds>", "Refresh interval in seconds (default: 2)")
+  .action(async (opts) => {
+    const cfg = resolveConfig();
+    assertOpenClawExists(cfg);
+    await runTop(cfg, opts);
+  });
+
+// --- schema ---
+program
+  .command("schema [command]")
+  .description("Show the --json output schema for a command (for agent/tool integration)")
+  .action((commandName?: string) => {
+    runSchema(commandName);
+  });
+
+program.parse(process.argv);

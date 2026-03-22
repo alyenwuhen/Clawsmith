@@ -1,0 +1,86 @@
+---
+name: clawsmith
+description: Monitor OpenClaw agent health, token usage, API cost, and context window in real time. Use when you need to check your own status, inspect context utilization, estimate API costs, review compaction events, or get optimization suggestions. Provides structured JSON output for programmatic self-monitoring.
+metadata: {"openclaw": {"emoji": "🦀", "homepage": "https://github.com/seekcontext/Clawsmith"}}
+---
+
+# clawsmith
+
+Real-time observability for OpenClaw agents. Check health, token usage, API cost, context window, and optimization suggestions — all from the CLI.
+
+## Install
+
+```bash
+npm install -g clawsmith
+clawsmith start
+```
+
+## Core commands
+
+| Command | What it does |
+|---------|-------------|
+| `clawsmith status --json` | Full health snapshot (session, model, context %, cost, alerts) |
+| `clawsmith cost --week --json` | API cost breakdown for the past week |
+| `clawsmith session --json` | Current session token timeline, turn by turn |
+| `clawsmith context --json` | Context window utilization and truncation warnings |
+| `clawsmith suggest --json` | Active optimization alerts with `ruleId` and `action` |
+| `clawsmith compacts --json` | List recent compaction events and lost content |
+| `clawsmith top` | Live auto-refreshing dashboard (human use) |
+
+## Recommended self-check workflow
+
+Run at session start or before any expensive task:
+
+```bash
+STATUS=$(clawsmith status --json)
+UTIL=$(echo $STATUS | node -e "process.stdin.resume();let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).utilizationPct))")
+echo "Context: $UTIL%"
+```
+
+Or in a single call:
+
+```bash
+clawsmith status --json
+```
+
+Key fields to act on:
+
+- `utilizationPct` ≥ 85 → compact soon or start a fresh session
+- `suggestions[].ruleId === "tools-truncation"` → TOOLS.md is being cut off
+- `suggestions[].ruleId === "cost-spike"` → today's spend is unusually high
+- `daemonRunning: false` → run `clawsmith start` to enable monitoring
+
+## Handling suggestions programmatically
+
+```bash
+# List active suggestions
+clawsmith suggest --json
+
+# Dismiss a noisy rule
+clawsmith suggest --dismiss memory-bloat --json
+# → { "ok": true, "dismissed": "memory-bloat" }
+```
+
+## Schema introspection
+
+When you need to know exact field names for any command:
+
+```bash
+clawsmith schema status    # full field spec for status --json
+clawsmith schema cost      # full field spec for cost --json
+clawsmith schema           # list all available schemas
+```
+
+## Error format
+
+All errors under `--json` are structured — never colored text:
+
+```json
+{ "ok": false, "error": "no_active_session", "message": "No active session found" }
+```
+
+Exit code is always `1` on error.
+
+## Cost note
+
+Cost figures are estimates based on public model pricing. Verify exact amounts with your model provider's billing dashboard.
