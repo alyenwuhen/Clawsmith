@@ -60,7 +60,7 @@ clawhub install clawsmith
 
 或者直接告诉你的 Agent：
 
-> 读取 https://raw.githubusercontent.com/seekcontext/Clawsmith/main/skills/clawsmith/SKILL.md 并按照其中的说明配置 clawsmith 自我监控。
+> 读取 https://github.com/alyenwuhen/Opensmith/tree/master/skills/clawsmith/skill.md 并按照其中的说明配置 clawsmith 自我监控。
 
 新建 OpenClaw 会话后，Agent 即可直接调用 `clawsmith` 命令进行自我监控。完整 Skill 定义见 [`skills/clawsmith/SKILL.md`](./skills/clawsmith/SKILL.md)。
 
