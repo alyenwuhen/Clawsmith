@@ -60,9 +60,26 @@ clawhub install clawsmith
 
 或者直接告诉你的 Agent：
 
-> 读取 https://raw.githubusercontent.com/seekcontext/Clawsmith/main/skills/clawsmith/SKILL.md 并按照其中的说明配置 clawsmith 自我监控。
+> 请阅读 https://raw.githubusercontent.com/seekcontext/Clawsmith/main/skills/clawsmith/SKILL.md 并按照说明设置 clawsmith 自我监控。
 
 新建 OpenClaw 会话后，Agent 即可直接调用 `clawsmith` 命令进行自我监控。完整 Skill 定义见 [`skills/clawsmith/SKILL.md`](./skills/clawsmith/SKILL.md)。
+
+### 给非 CLI 用户启用 Web 可视化监控
+
+如果你希望在 OpenClaw 里直接看网页监控（Trace / Metrics），安装内置插件 `clawsmith-observer`：
+
+```bash
+openclaw plugins install /path/to/Clawsmith/openclaw/extensions/clawsmith-observer
+openclaw plugins enable clawsmith-observer
+openclaw gateway restart
+```
+
+安装后可直接访问：
+
+- `http://127.0.0.1:18789/plugins/clawsmith/trace`（追踪列表 + 单轮节点流程）
+- `http://127.0.0.1:18789/plugins/clawsmith/metrics`（上下文、Token、Tools、成本概览）
+
+插件会在每轮模型回复生成后拼装 `[Clawsmith Turn]` 摘要卡片。该摘要不进入模型提示词，不消耗模型输入 Token。
 
 ---
 

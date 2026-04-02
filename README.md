@@ -61,8 +61,27 @@ clawhub install clawsmith
 Or tell your agent directly:
 
 > Read https://raw.githubusercontent.com/seekcontext/Clawsmith/main/skills/clawsmith/SKILL.md and follow the instructions to set up clawsmith self-monitoring.
+>
+> 请阅读 https://raw.githubusercontent.com/seekcontext/Clawsmith/main/skills/clawsmith/SKILL.md 并按照说明设置 clawsmith 自我监控。
 
 Start a new OpenClaw session and the agent will automatically have access to `clawsmith` commands for self-monitoring. See [`skills/clawsmith/SKILL.md`](./skills/clawsmith/SKILL.md) for the full skill definition.
+
+### Enable web monitoring for non-CLI users
+
+To expose a Coze/LangSmith-style monitoring UI in OpenClaw, install the built-in observer plugin:
+
+```bash
+openclaw plugins install /path/to/Clawsmith/openclaw/extensions/clawsmith-observer
+openclaw plugins enable clawsmith-observer
+openclaw gateway restart
+```
+
+Then open:
+
+- `http://127.0.0.1:18789/plugins/clawsmith/trace` (trace list + per-round node flow)
+- `http://127.0.0.1:18789/plugins/clawsmith/metrics` (context/token/tools/cost overview)
+
+The plugin also appends a `[Clawsmith Turn]` summary card after each model response is generated. This is post-send assembly and is not counted as model prompt tokens.
 
 ---
 

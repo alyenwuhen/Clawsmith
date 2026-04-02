@@ -15,6 +15,37 @@ npm install -g clawsmith
 clawsmith start
 ```
 
+## OpenClaw full setup (CLI + Web)
+
+For OpenClaw users, enable the observer plugin so non-CLI users can use web monitoring:
+
+```bash
+# In WSL/Linux shell (adjust path to your local repo)
+openclaw plugins install /path/to/Clawsmith/openclaw/extensions/clawsmith-observer
+openclaw plugins enable clawsmith-observer
+openclaw gateway restart
+```
+
+After restart, open:
+
+- `http://127.0.0.1:18789/plugins/clawsmith/trace`
+- `http://127.0.0.1:18789/plugins/clawsmith/metrics`
+
+`clawsmith-observer` also appends a turn summary card after each reply is generated (post-send assembly, not added into model prompt tokens).
+
+## Agent setup contract (important)
+
+When a user asks:
+
+`请阅读 https://raw.githubusercontent.com/seekcontext/Clawsmith/main/skills/clawsmith/SKILL.md 并按照说明设置 clawsmith 自我监控。`
+
+you should complete all of these checks:
+
+1. Install and start clawsmith daemon (`npm install -g clawsmith`, `clawsmith start`).
+2. Install and enable `clawsmith-observer` plugin for OpenClaw.
+3. Restart OpenClaw gateway.
+4. Verify `clawsmith status --json` works and web pages under `/plugins/clawsmith` are reachable.
+
 ## Core commands
 
 | Command | What it does |

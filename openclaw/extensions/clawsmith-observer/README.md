@@ -3,7 +3,7 @@
 OpenClaw native plugin for non-CLI users:
 
 - Auto-starts `clawsmith` daemon when OpenClaw gateway starts.
-- Appends a compact monitor card to outbound replies in `message_sending` hook.
+- Appends a compact monitor card to outbound replies in `message_sending` hook (post-send, not model prompt token usage).
 - Exposes a web dashboard at `/plugins/clawsmith`.
 - Professional views:
   - `Trace`: `/plugins/clawsmith/trace`
@@ -29,7 +29,7 @@ Restart OpenClaw gateway afterwards.
         "config": {
           "autoStartDaemon": true,
           "autoAppendMonitorCard": true,
-          "appendIntervalSec": 20,
+          "appendIntervalSec": 0,
           "dashboardEnabled": true,
           "dashboardBasePath": "/plugins/clawsmith",
           "dashboardToken": "",
